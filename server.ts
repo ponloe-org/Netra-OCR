@@ -661,11 +661,15 @@ app.get("/v1/jobs/:job_id/assets/:asset_id", (req: Request, res: Response) => {
     return;
   }
   const assetsDir = path.join(jobDir(jobId), "assets");
-  for (const ext of [".png", ".jpg"]) {
+  for (const [ext, mime] of [
+    [".png", "image/png"],
+    [".jpg", "image/jpeg"],
+  ] as const) {
     const p = path.join(assetsDir, assetId + ext);
     if (fs.existsSync(p)) {
+      res.setHeader("Content-Type", mime);
       res.setHeader("Cache-Control", "private, max-age=86400, immutable");
-      res.sendFile(p);
+      res.send(fs.readFileSync(p));
       return;
     }
   }
@@ -722,10 +726,15 @@ app.get("/docs", (_req: Request, res: Response) => {
 });
 
 const staticDir = path.resolve("static");
-app.get("/", (_req: Request, res: Response) => {
-  res.sendFile(path.join(staticDir, "index.html"));
+app.get("/favicon.ico", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "image/svg+xml");
+  res.send(fs.readFileSync(path.join(staticDir, "favicon.svg")));
 });
-app.use("/static", express.static(staticDir));
+app.get("/", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(fs.readFileSync(path.join(staticDir, "index.html")));
+});
+app.use("/static", express.static(staticDir, { dotfiles: "allow" }));
 
 async function bootstrap() {
   loadExistingJobs();

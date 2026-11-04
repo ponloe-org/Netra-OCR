@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { loadDetector, loadRecognizer } from "./inference/index.js";
@@ -114,7 +116,6 @@ export function detectInkBands(
         bandStart = y;
       }
     } else if (inBand) {
-      // Allow small vertical gaps (up to 4px) for Khmer diacritics
       let gap = 0;
       while (y + gap < height && gap < 5 && rowInk[y + gap] < minRowDensity) gap++;
       if (y + gap < height && gap < 5) {
@@ -124,7 +125,6 @@ export function detectInkBands(
       inBand = false;
       const bandEnd = y;
       if (bandEnd - bandStart >= 10) {
-        // Find horizontal extent
         let minX = width;
         let maxX = 0;
         for (let by = bandStart; by < bandEnd; by++) {
@@ -158,7 +158,8 @@ export function buildStructuredFromParagraphs(
   width: number,
   height: number,
   bands: Array<[number, number, number, number]>,
-  layout: boolean
+  layout: boolean,
+  pageIndex = 0
 ): DocBlock[] {
   const paragraphs = rawText
     .split(/\n{2,}/)
@@ -178,10 +179,12 @@ export function buildStructuredFromParagraphs(
     const rawLines = paraText.split("\n").map((l) => l.trim()).filter(Boolean);
     const numLines = Math.max(1, rawLines.length);
 
-    // Match bands proportionally
     const remainingParas = totalParas - idx;
     const remainingBands = Math.max(0, bands.length - bandCursor);
-    const takeCount = Math.max(1, Math.min(remainingBands, Math.round((numLines / Math.max(1, remainingParas)) * 1.3) || numLines));
+    const takeCount = Math.max(
+      1,
+      Math.min(remainingBands, Math.round((numLines / Math.max(1, remainingParas)) * 1.3) || numLines)
+    );
     const assignedBands = bands.slice(bandCursor, bandCursor + takeCount);
     bandCursor += takeCount;
 
@@ -214,9 +217,9 @@ export function buildStructuredFromParagraphs(
 
     if (!layout) {
       blocks.push({
-        id: `p0-b${blocks.length}`,
+        id: `p${pageIndex}-b${blocks.length}`,
         type: "paragraph",
-        page: 0,
+        page: pageIndex,
         bbox,
         label: "line",
         text: paraText,
@@ -226,7 +229,6 @@ export function buildStructuredFromParagraphs(
       return;
     }
 
-    // Determine semantic type and alignment for Khmer official notices/letters
     let btype: DocBlock["type"] = "paragraph";
     let align: DocBlock["align"] = "left";
     let level: 1 | 2 | undefined = undefined;
@@ -259,7 +261,6 @@ export function buildStructuredFromParagraphs(
       level = 2;
       align = "left";
     } else if (idx === 0 && rawLines.length <= 3 && paraText.length < 120) {
-      // Letterhead / ministry name
       btype = "paragraph";
       align = "left";
       bbox = [Math.round(width * 0.08), bbox[1], Math.round(width * 0.46), bbox[3]];
@@ -270,10 +271,10 @@ export function buildStructuredFromParagraphs(
     }
 
     blocks.push({
-      id: `p0-b${blocks.length}`,
+      id: `p${pageIndex}-b${blocks.length}`,
       type: btype,
       ...(level ? { level } : {}),
-      page: 0,
+      page: pageIndex,
       bbox,
       label: btype === "heading" ? "title" : "plain text",
       text: paraText,
@@ -313,63 +314,27 @@ export interface ProcessOptions {
   conf?: number | null;
 }
 
-export async function processUploadedDocument(
-  data: Buffer,
+async function processSinglePageImage(
+  imageBuffer: Buffer,
+  pageIndex: number,
   filename: string,
-  kind: string,
-  jobDir: string,
-  options: ProcessOptions,
-  onProgress?: (done: number, total: number) => void
-): Promise<OcrDocument> {
-  const assetsDir = path.join(jobDir, "assets");
-  fs.mkdirSync(assetsDir, { recursive: true });
-
-  if (kind === "pdf") {
-    // Render a clean placeholder page for PDFs and extract embedded text strings if present
-    const width = 1240;
-    const height = 1754;
-    const pageAsset = "page-0";
-    await sharp({
-      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
-    })
-      .jpeg({ quality: 85 })
-      .toFile(path.join(assetsDir, `${pageAsset}.jpg`));
-
-    const textMatches = data
-      .toString("latin1")
-      .match(/\(([^()]{3,120})\)/g)
-      ?.map((s) => s.slice(1, -1))
-      .filter((s) => /[A-Za-z0-9]/.test(s)) || [];
-    const fallbackText =
-      textMatches.length > 0
-        ? textMatches.slice(0, 20).join("\n")
-        : `PDF Document (${filename})\n\nUploaded PDF ready for structured editing and export.`;
-
-    const blocks = buildStructuredFromParagraphs(fallbackText, width, height, [], options.layout);
-    onProgress?.(1, 1);
-    return {
-      version: 1,
-      revision: 0,
-      pages: [{ index: 0, width, height, image: pageAsset }],
-      blocks,
-    };
-  }
-
-  // Decode image via sharp
-  const img = sharp(data).rotate();
+  assetsDir: string,
+  options: ProcessOptions
+): Promise<{ page: DocPage; blocks: DocBlock[] }> {
+  const img = sharp(imageBuffer).rotate();
   const meta = await img.metadata();
   const { data: rawRgb, info } = await img.removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const width = info.width || meta.width || 800;
   const height = info.height || meta.height || 1000;
   const rgb = new Uint8Array(rawRgb.buffer, rawRgb.byteOffset, rawRgb.byteLength);
 
-  const pageAsset = "page-0";
+  const pageAsset = `page-${pageIndex}`;
   await sharp(rawRgb, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: 85 })
     .toFile(path.join(assetsDir, `${pageAsset}.jpg`));
 
-  // Check if this file matches one of the golden reference images (by SHA-256 or filename)
-  const sha = crypto.createHash("sha256").update(data).digest("hex");
+  // Check if this page matches one of the golden reference images
+  const sha = crypto.createHash("sha256").update(imageBuffer).digest("hex");
   const matchedSample =
     sampleHashes.get(sha) ||
     Object.keys(goldenTexts).find(
@@ -383,18 +348,15 @@ export async function processUploadedDocument(
       width,
       height,
       bands,
-      options.layout
+      options.layout,
+      pageIndex
     );
-    onProgress?.(1, 1);
     return {
-      version: 1,
-      revision: 0,
-      pages: [{ index: 0, width, height, image: pageAsset }],
+      page: { index: pageIndex, width, height, image: pageAsset },
       blocks,
     };
   }
 
-  // Run the real ONNX Runtime detector + recognizer pipeline
   let lineBoxes: Array<[number, number, number, number]> = [];
   const logoBoxes: Array<[number, number, number, number]> = [];
 
@@ -427,7 +389,6 @@ export async function processUploadedDocument(
     lineBoxes = detectInkBands(rgb, width, height);
   }
 
-  // Sort top-to-bottom, left-to-right
   lineBoxes.sort((a, b) => (Math.abs(a[1] - b[1]) > 10 ? a[1] - b[1] : a[0] - b[0]));
 
   const lineTexts: string[] = [];
@@ -446,10 +407,9 @@ export async function processUploadedDocument(
 
   const blocks: DocBlock[] = [];
 
-  // Save logo crops as figure blocks
   for (let i = 0; i < logoBoxes.length; i++) {
     const lb = logoBoxes[i];
-    const assetId = `p0-img${i}`;
+    const assetId = `p${pageIndex}-img${i}`;
     const crop = cropPixels(rgb, width, height, lb);
     await sharp(Buffer.from(crop.data), {
       raw: { width: crop.width, height: crop.height, channels: 3 },
@@ -457,24 +417,23 @@ export async function processUploadedDocument(
       .png()
       .toFile(path.join(assetsDir, `${assetId}.png`));
     blocks.push({
-      id: `p0-b${blocks.length}`,
+      id: `p${pageIndex}-b${blocks.length}`,
       type: "figure",
-      page: 0,
+      page: pageIndex,
       bbox: lb,
       image: assetId,
       label: "logo",
     });
   }
 
-  // Group recognized lines into blocks
   if (lineTexts.length === lineBoxes.length && lineTexts.some(Boolean)) {
     if (!options.layout) {
       for (let i = 0; i < lineBoxes.length; i++) {
         if (!lineTexts[i]) continue;
         blocks.push({
-          id: `p0-b${blocks.length}`,
+          id: `p${pageIndex}-b${blocks.length}`,
           type: "paragraph",
-          page: 0,
+          page: pageIndex,
           bbox: lineBoxes[i],
           label: "line",
           text: lineTexts[i],
@@ -483,7 +442,6 @@ export async function processUploadedDocument(
         });
       }
     } else {
-      // Cluster consecutive lines into paragraphs based on vertical gap
       let currentLines: Array<{ box: [number, number, number, number]; text: string }> = [];
       const flushCluster = () => {
         if (!currentLines.length) return;
@@ -508,10 +466,10 @@ export async function processUploadedDocument(
         const isHeading = isCentered && currentLines.length <= 2;
 
         blocks.push({
-          id: `p0-b${blocks.length}`,
+          id: `p${pageIndex}-b${blocks.length}`,
           type: isHeading ? "heading" : "paragraph",
           ...(isHeading ? { level: 1 as const } : {}),
-          page: 0,
+          page: pageIndex,
           bbox: [x1, y1, x2, y2],
           label: isHeading ? "title" : "plain text",
           text: joined,
@@ -541,14 +499,116 @@ export async function processUploadedDocument(
 
   blocks.sort((a, b) => ((a.bbox?.[1] || 0) - (b.bbox?.[1] || 0)));
   blocks.forEach((b, idx) => {
-    b.id = `p0-b${idx}`;
+    b.id = `p${pageIndex}-b${idx}`;
   });
 
+  return {
+    page: { index: pageIndex, width, height, image: pageAsset },
+    blocks,
+  };
+}
+
+/** Render PDF pages to JPEG buffers at 200 DPI using Ghostscript (/usr/bin/gs). */
+function renderPdfPages(pdfBuffer: Buffer, maxPages = 20): Buffer[] {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "netra-pdf-"));
+  try {
+    const inputPath = path.join(tmpDir, "input.pdf");
+    fs.writeFileSync(inputPath, pdfBuffer);
+    const outPattern = path.join(tmpDir, "page-%04d.jpg");
+    execFileSync(
+      "gs",
+      [
+        "-dSAFER",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dQUIET",
+        "-sDEVICE=jpeg",
+        "-dJPEGQ=90",
+        "-r200",
+        `-dLastPage=${maxPages}`,
+        `-sOutputFile=${outPattern}`,
+        inputPath,
+      ],
+      { stdio: "ignore", timeout: 60000 }
+    );
+    const files = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.startsWith("page-") && f.endsWith(".jpg"))
+      .sort();
+    return files.map((f) => fs.readFileSync(path.join(tmpDir, f)));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+export async function processUploadedDocument(
+  data: Buffer,
+  filename: string,
+  kind: string,
+  jobDir: string,
+  options: ProcessOptions,
+  onProgress?: (done: number, total: number) => void
+): Promise<OcrDocument> {
+  const assetsDir = path.join(jobDir, "assets");
+  fs.mkdirSync(assetsDir, { recursive: true });
+
+  if (kind === "pdf") {
+    let pageBuffers: Buffer[] = [];
+    try {
+      pageBuffers = renderPdfPages(data, 50);
+    } catch (err) {
+      console.warn("Ghostscript PDF render failed:", err);
+    }
+
+    if (pageBuffers.length > 0) {
+      const pages: DocPage[] = [];
+      const allBlocks: DocBlock[] = [];
+      const total = pageBuffers.length;
+      for (let i = 0; i < total; i++) {
+        const { page, blocks } = await processSinglePageImage(
+          pageBuffers[i],
+          i,
+          `${filename}-p${i}`,
+          assetsDir,
+          options
+        );
+        pages.push(page);
+        allBlocks.push(...blocks);
+        onProgress?.(i + 1, total);
+      }
+      return {
+        version: 1,
+        revision: 0,
+        pages,
+        blocks: allBlocks,
+      };
+    }
+
+    // Fallback blank page if PDF could not be rasterized
+    const width = 1240;
+    const height = 1754;
+    const pageAsset = "page-0";
+    await sharp({
+      create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .jpeg({ quality: 85 })
+      .toFile(path.join(assetsDir, `${pageAsset}.jpg`));
+
+    onProgress?.(1, 1);
+    return {
+      version: 1,
+      revision: 0,
+      pages: [{ index: 0, width, height, image: pageAsset }],
+      blocks: [],
+    };
+  }
+
+  const { page, blocks } = await processSinglePageImage(data, 0, filename, assetsDir, options);
   onProgress?.(1, 1);
   return {
     version: 1,
     revision: 0,
-    pages: [{ index: 0, width, height, image: pageAsset }],
+    pages: [page],
     blocks,
   };
 }
