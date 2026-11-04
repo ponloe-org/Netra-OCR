@@ -1,0 +1,5 @@
+{
+  "name": "Netra OCR",
+  "description": "Khmer document OCR that runs on your own machine. Upload a scan or PDF, correct the structured result, export to Word.",
+  "requestFramePermissions": []
+}
