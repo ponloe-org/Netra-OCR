@@ -18,7 +18,6 @@
   <img src="https://img.shields.io/badge/license-MIT-e75f1b?labelColor=4f2724" alt="License: MIT" />
   <img src="https://img.shields.io/badge/python-3.10%2B-e75f1b?labelColor=4f2724&logo=python&logoColor=f5efe5" alt="Python 3.10+" />
   <a href="https://huggingface.co/Netra-Lab/Netra-OCR"><img src="https://img.shields.io/badge/params-19M-e75f1b?labelColor=4f2724&logo=huggingface&logoColor=f5efe5" alt="19M parameters" /></a>
-  <a href="https://pypi.org/project/netra-ocr/"><img src="https://img.shields.io/badge/pip-netra--ocr-e75f1b?labelColor=4f2724&logo=pypi&logoColor=f5efe5" alt="pip install netra-ocr" /></a>
   <a href="https://github.com/netra-ai-lab/Netra-OCR/pkgs/container/netra-ocr"><img src="https://img.shields.io/badge/docker-ghcr.io-e75f1b?labelColor=4f2724&logo=docker&logoColor=f5efe5" alt="Docker image" /></a>
 </p>
 
@@ -195,75 +194,63 @@ docker run -d --name netra-ocr -p 8000:8000 -v netra-data:/data ghcr.io/netra-ai
 
 ## 6. Install
 
+**Docker** (recommended): see the quick start above, or build the image from this repository:
+
 ```bash
-pip install "netra-ocr[cpu]"      # or "netra-ocr[gpu]" for an NVIDIA GPU
-# or, from a checkout:  pip install -e ".[full]"
+docker build -f docker/Dockerfile -t netra-ocr .
 ```
 
-| Extra | Adds |
-| --- | --- |
-| `cpu` | ONNX Runtime for the CPU. Pick this or `gpu`: every model needs one of them |
-| `gpu` | ONNX Runtime for NVIDIA GPUs (CUDA), with the CPU as fallback. Don't install it beside `cpu` |
-| *(always)* | The recognizer, the YOLO text-line and logo detector and layout analysis |
-| `docx` | Word output |
-| `pdf` | PDF input |
-| `server` | The web app and REST API (`netra_ocr serve`), with `pdf` and `docx` |
-| `legacy` | The classic computer-vision line detector (adds OpenCV) |
-| `tesseract` | The Tesseract line detector (adds OpenCV, SciPy, scikit-image); also needs the system Tesseract binary |
-| `full` | Everything above, on the CPU |
+The build downloads every model bundle, so the image runs offline and fails to build if a download fails.
 
-`netra-ocr[cpu]` is about 55 MB of packages (numpy, Pillow, ONNX Runtime, `huggingface_hub`), and the models it downloads on first use take about 120 MB: no PyTorch, no OpenCV.
+**From source** (Node 22 or later):
 
-Every model runs on [ONNX Runtime](https://onnxruntime.ai) (the `cpu` or `gpu` extra installs it); PyTorch isn't needed. Each model downloads from [Hugging Face](https://huggingface.co/Netra-Lab/Netra-OCR) the first time it's used, only the files your device needs, and is cached under `~/.cache/huggingface` (`HF_HOME`). A GPU is used when the `gpu` extra is installed; `NETRA_DEVICE=cpu` forces the CPU.
+```bash
+npm install
+npm start                          # http://localhost:3000 (PORT or NETRA_PORT)
+npx tsx scripts/prefetch-models.ts # optional: download the models ahead of time (NETRA_MODELS_DIR)
+npm test                           # unit tests
+```
 
 ## 7. Usage
 
-**Python, one text line.** If you already have line crops, the recognizer alone is enough: it takes a path or a PIL image and returns the text.
+**Web app:** open the server address and drop in a scan, a photo or a PDF.
 
-```python
-from netra_ocr.recognition import recognize, recognize_batch
-
-text = recognize("line_crop.png")                              # one crop
-texts = recognize_batch(my_line_crops, batch_size=16)          # many crops, model stays loaded
-```
-
-**Python, a whole page.** `KhmerOCRPipeline` detects the lines, reads them and writes the result; the output file's extension picks the format.
-
-```python
-from netra_ocr.ocr_engine import KhmerOCRPipeline
-
-pipeline = KhmerOCRPipeline(detector="yolo", decoder="blockwise")   # create once, reuse
-text = pipeline.process_image(image_path="document.png", output_path="document.docx")
-```
-
-**Command line.**
+**REST API:**
 
 ```bash
-netra_ocr --image scan.jpg --output result.txt                    # YOLO detector, plain text
-netra_ocr --image scan.jpg --output result.docx                   # Word, logos embedded as images
-netra_ocr --image letter.pdf --output letter.docx --layout        # headings, tables and figures kept
-netra_ocr --image scan.jpg --output result.txt --detector legacy  # needs the legacy extra
+curl -F file=@scan.jpg http://localhost:8000/v1/ocr
 ```
 
-**Web app and REST API.** The Docker image above, or without Docker:
+`POST /v1/ocr` returns `200 { job, document }` when the job finishes within `NETRA_SYNC_TIMEOUT` seconds. Otherwise it returns `202 { job }`. Then poll `GET /v1/jobs/{id}` until `job.status` is `done` or `error`, and fetch the result from `GET /v1/jobs/{id}/document`. To download a file, use `GET /v1/jobs/{id}/export?format=docx|html|md|json|txt`.
 
-```bash
-pip install "netra-ocr[server,cpu]"
-netra_ocr serve                                                    # http://localhost:8000, API docs at /docs
-curl -F file=@scan.jpg http://localhost:8000/v1/ocr               # returns the finished document
-```
+| Form field | Values | Default |
+| :--- | :--- | :--- |
+| `detector` | `yolo` (YOLO line detector), `legacy` (classic line detector) | `yolo` |
+| `decoder` | `ar` (autoregressive), `blockwise` (parallel) | `ar` |
+| `layout` | `true` / `false` | `true` |
+| `include_headers_footers` | `true` / `false` | `true` |
+| `wait` | `true` / `false` | `true` |
+| `conf` | detector confidence threshold (`yolo` only) | auto |
 
-| Reference | |
-| --- | --- |
-| [Usage](https://github.com/netra-ai-lab/Netra-OCR/blob/master/docs/USAGE.md) | Every detector, decoder, output format and option; structured documents; the REST API and its settings; the standalone Hugging Face script |
-| [Architecture](https://github.com/netra-ai-lab/Netra-OCR/blob/master/docs/ARCHITECTURE.md) | Each module in detail: chunking, the SE network, merging, the BiLSTM, decoding, tokenisation |
-| [Results](https://github.com/netra-ai-lab/Netra-OCR/blob/master/docs/RESULTS.md) | The full benchmark against Tesseract, Surya and the vision-language models; greedy against blockwise decoding |
-| [Releasing](https://github.com/netra-ai-lab/Netra-OCR/blob/master/docs/RELEASING.md) | Publishing to PyPI and the Docker registry |
-| [Training](https://github.com/netra-ai-lab/Netra-OCR/blob/master/training/README.md) | Fine-tuning, training and evaluating the recognizer, and exporting it for the app |
+**Environment variables:**
+
+| Variable | Purpose | Default |
+| :--- | :--- | :--- |
+| `NETRA_HOST`, `NETRA_PORT` | Listen address and port | `0.0.0.0`, `3000` |
+| `NETRA_DATA_DIR` | Job storage | `.cache/netra-ocr/jobs` |
+| `NETRA_MODELS_DIR` | Model bundle cache | `.cache/netra-ocr/models` |
+| `NETRA_MAX_UPLOAD_MB`, `NETRA_MAX_PDF_PAGES` | Upload and page limits | `50`, `100` |
+| `NETRA_JOB_TTL_HOURS` | How long finished jobs are kept | `24` |
+| `NETRA_API_KEY` | When set, `/v1/*` requires this key (`x-api-key` header or `Authorization: Bearer`) | unset |
+| `NETRA_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API, for example `http://localhost:3000` | unset (no cross-origin access) |
+| `NETRA_SYNC_TIMEOUT` | Seconds to wait before `POST /v1/ocr` returns `202` | `120` |
+| `NETRA_WARMUP` | Set to `false` to skip loading the models at start-up | on |
+
+**Calling the API from a web page on another origin.** Browsers only read the response when the server allows the page's origin. Set `NETRA_CORS_ORIGINS` to that origin, for example `NETRA_CORS_ORIGINS=http://localhost:3000`. Wildcards are refused on purpose: any website could otherwise read OCR results from a server on your machine.
 
 ## 8. Train, fine-tune and evaluate
 
-The repository also trains the recognizer. Each step is one script, run from a checkout. These need PyTorch and are not part of `pip install netra-ocr`.
+The training scripts below use the Python `netra_ocr` package, which the TypeScript server replaced. **They do not run on this branch yet**; they are kept as the reference for how the published models were trained and exported.
 
 ```bash
 git clone https://github.com/netra-ai-lab/Netra-OCR && cd Netra-OCR
@@ -272,7 +259,6 @@ bash training/check_data.sh my_lines/                    # check your dataset
 bash training/finetune.sh my_lines/ --name my-model      # fine-tune the published model on it
 bash training/evaluate.sh published training/runs/my-model/best.pth --test khob my_test_lines/
 bash training/export.sh training/runs/my-model/best.pth  # ONNX model folder for the app
-NETRA_BUNDLES=training/runs/my-model/bundles netra_ocr serve   # the app, with your model
 ```
 
 A dataset is one image per text line, with its text:

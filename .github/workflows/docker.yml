@@ -3,7 +3,7 @@
 #   ghcr.io/<owner>/netra-ocr:1.2.3, :1.2, :latest     linux/amd64 + linux/arm64
 #
 # Each architecture builds natively on its own runner (arm64 runners are free
-# for public repositories), and the build's smoke test runs on both. A final
+# for public repositories), and the build fails if a model download fails. A final
 # job joins the two into one multi-arch tag, so `docker pull` picks the right
 # one on an Intel/AMD PC, an Apple Silicon Mac or an ARM server.
 #

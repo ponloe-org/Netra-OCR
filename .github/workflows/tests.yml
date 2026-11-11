@@ -1,9 +1,5 @@
-# Fast tests on every push and pull request: the Python package (no models
-# needed) and the browser code's unit tests.
-#
-# A manual run (Actions → tests → Run workflow) can also run the slow tests,
-# which download the real models and check the text of every page in
-# test_images/ against tests/golden/.
+# Unit tests on every push and pull request: the CORS policy for the API.
+# The models are not needed.
 name: tests
 
 on:
@@ -11,49 +7,13 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      slow:
-        description: "Also run the real-model tests (pytest --slow)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
-  python:
+  unit:
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: pip install ".[cpu,server]" pytest httpx opencv-python-headless  # cv2 only to compare netra_ocr.imaging against
-
-      - name: Cache the models
-        if: inputs.slow
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ hashFiles('netra_ocr/models.py') }}
-
-      - name: Test
-        run: pytest tests -q ${{ inputs.slow && '--slow' || '' }}
-        env:
-          NETRA_DEVICE: cpu
-
-      - name: Check the package stays small (no model files)
-        run: pip install build && python -m build && python scripts/check_dist.py
-
-  web:
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +21,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: web/package-lock.json
 
-      - run: npm ci
-      - run: npm test
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Test
+        run: npm test

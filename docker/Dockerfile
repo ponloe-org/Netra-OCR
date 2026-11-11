@@ -1,71 +1,63 @@
 # syntax=docker/dockerfile:1.7
 #
-# Netra OCR — web app + REST API with all model weights baked in (runs offline).
+# Netra OCR: web app and REST API, with the model bundles baked in so it runs offline.
 #
 #   docker build -f docker/Dockerfile -t netra-ocr .
 #   docker run -p 8000:8000 -v netra-data:/data netra-ocr
 #   then open http://localhost:8000
 #
-# CPU only, and no PyTorch: every model runs on ONNX Runtime (netra_ocr/inference).
-# A page takes about a second on an ordinary CPU.
+# CPU only. The models run on ONNX Runtime (src/pipeline.ts); PDF pages are rendered with
+# Ghostscript. The build fails if any model bundle cannot be downloaded.
 
-ARG PYTHON_VERSION=3.12
+ARG NODE_VERSION=22
 
-# ── base: shared by the build and runtime stages ─────────────────────────────
-# No system packages: the app needs no OpenCV and no Tesseract (those detectors
-# are optional extras, left out of the image to keep it small).
-FROM python:${PYTHON_VERSION}-slim AS base
+# ── deps: npm installs the packages, including sharp's native binaries ─────────
+FROM node:${NODE_VERSION}-bookworm-slim AS deps
+WORKDIR /app
+COPY package.json ./
+# The repository has no package-lock.json yet, so this resolves the latest matching versions.
+# Commit a lock file and switch to `npm ci` to make builds reproducible.
+RUN npm install --no-audit --no-fund
 
-# ── build: virtualenv with netra-ocr[server] on ONNX Runtime (CPU), pruned ──
-FROM base AS build
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN python -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
+# ── models: download every bundle once, at build time ──────────────────────────
+FROM deps AS models
+COPY tsconfig.json ./
+COPY src ./src
+COPY scripts ./scripts
+ENV NETRA_MODELS_DIR=/models
+RUN mkdir -p /models && npx tsx scripts/prefetch-models.ts
 
-WORKDIR /src
-COPY pyproject.toml readme.md LICENSE MANIFEST.in ./
-COPY netra_ocr ./netra_ocr
-RUN pip install ".[server,cpu]"
-
-# Prune what the app never needs (checked by docker/smoke_test.py below):
-# bytecode caches and pip.
-RUN find /opt/venv -depth -name __pycache__ -type d -exec rm -rf {} + && \
-    pip uninstall -y pip
-
-# ── weights: the model bundles, fetched once at build time ──────────────────
-# Then run the whole pipeline once against the pruned environment, offline:
-# a prune that removed something needed fails here, not on the first upload.
-FROM build AS weights
-COPY docker/fetch_weights.py docker/smoke_test.py /tmp/
-RUN HF_HOME=/tmp/hf python /tmp/fetch_weights.py /models/netra-ocr && rm -rf /tmp/hf && \
-    cd /tmp && NETRA_BUNDLES=/models/netra-ocr HF_HUB_OFFLINE=1 python /tmp/smoke_test.py
-
-# ── runtime ──────────────────────────────────────────────────────────────────
-FROM base AS runtime
+# ── runtime ────────────────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 LABEL org.opencontainers.image.title="Netra OCR" \
-      org.opencontainers.image.description="Khmer + English document OCR: layout analysis, recognition, editable structured export" \
+      org.opencontainers.image.description="Khmer and English document OCR: layout analysis, recognition, editable structured export" \
       org.opencontainers.image.source="https://github.com/netra-ai-lab/Netra-OCR" \
-      org.opencontainers.image.licenses="MIT AND AGPL-3.0-only"
+      org.opencontainers.image.licenses="MIT"
 
-RUN useradd --create-home --uid 10001 netra \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ghostscript ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 10001 netra \
  && mkdir -p /data \
  && chown -R netra /data
-COPY --from=build /opt/venv /opt/venv
-COPY --from=weights /models /models
 
-ENV PATH=/opt/venv/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    NETRA_BUNDLES=/models/netra-ocr \
-    HF_HUB_OFFLINE=1 \
-    NETRA_DATA_DIR=/data \
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json server.ts readme.md LICENSE ./
+COPY src ./src
+COPY static ./static
+COPY samples ./samples
+COPY --from=models /models /models
+
+ENV NODE_ENV=production \
     NETRA_HOST=0.0.0.0 \
     NETRA_PORT=8000 \
-    NETRA_DEVICE=cpu
+    NETRA_DATA_DIR=/data \
+    NETRA_MODELS_DIR=/models
 
 USER netra
 VOLUME ["/data"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request,os; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('NETRA_PORT','8000'), timeout=4)"
-CMD ["netra_ocr", "serve"]
+    CMD node -e "fetch('http://127.0.0.1:' + (process.env.NETRA_PORT || 8000) + '/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+CMD ["node", "--import", "tsx", "server.ts"]

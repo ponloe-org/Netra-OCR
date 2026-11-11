@@ -8,7 +8,8 @@
     "dev": "tsx server.ts",
     "build": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "start": "tsx server.ts"
+    "start": "tsx server.ts",
+    "test": "node --no-warnings --test tests/*.test.mjs"
   },
   "dependencies": {
     "docx": "^9.15.2",

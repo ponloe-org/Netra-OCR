@@ -9,7 +9,8 @@ import type { DocBlock, DocLine, DocPage, OcrDocument } from "./exporters.js";
 
 const MODEL_REVISION = "04cb751b95c3f26417bfd0220f822ea828b6e5cd";
 const HF_BASE = `https://huggingface.co/Netra-Lab/Netra-OCR/resolve/${MODEL_REVISION}`;
-const CACHE_MODELS_DIR = path.resolve(".cache/netra-ocr/models");
+// NETRA_MODELS_DIR lets a container bake the bundles into an image path (see docker/Dockerfile).
+const CACHE_MODELS_DIR = path.resolve(process.env.NETRA_MODELS_DIR || ".cache/netra-ocr/models");
 
 const GOLDEN_PATH = path.resolve("src/golden.json");
 const SAMPLES_DIR = path.resolve("samples");
