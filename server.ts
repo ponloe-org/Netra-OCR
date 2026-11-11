@@ -5,6 +5,7 @@ import express, { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { exportDocument, FORMATS, OcrDocument, DocBlock, DocPage } from "./src/exporters.js";
 import { getLineDetector, getRecognizer, processUploadedDocument, ProcessOptions } from "./src/pipeline.js";
+import { parseOriginList, resolveCorsOrigin } from "./src/cors.js";
 
 const PORT = Number(process.env.PORT || process.env.NETRA_PORT || 3000);
 const HOST = process.env.NETRA_HOST || "0.0.0.0";
@@ -328,6 +329,26 @@ const app = express();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 + 1024 },
+});
+
+// CORS for browser apps on other origins. Only origins listed in NETRA_CORS_ORIGINS get
+// headers; the default is none. Preflight requests are answered before the API key check,
+// because browsers never send credentials on a preflight.
+const CORS_ORIGINS = parseOriginList(process.env.NETRA_CORS_ORIGINS);
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const allowedOrigin = resolveCorsOrigin(req.header("origin"), CORS_ORIGINS);
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "content-type, x-api-key, authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "600");
+  }
+  if (req.method === "OPTIONS" && req.header("access-control-request-method")) {
+    res.status(allowedOrigin ? 204 : 403).end();
+    return;
+  }
+  next();
 });
 
 // Optional API key middleware on /v1/*

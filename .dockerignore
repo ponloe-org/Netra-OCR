@@ -1,14 +1,12 @@
-# Only pyproject/readme/LICENSE/MANIFEST.in, netra_ocr/ and docker/ are needed.
-# Everything else (venvs, HF dataset cache, training checkpoints, test sets)
-# would otherwise make the build context tens of GB.
-**
-!pyproject.toml
-!readme.md
-!LICENSE
-!MANIFEST.in
-!netra_ocr/
-!docker/fetch_weights.py
-!docker/smoke_test.py
-**/__pycache__
-**/*.pyc
-**/*.egg-info
+# Only what the Node server needs is sent to the build. Checkouts, caches, training data,
+# test sets, the research paper and the separate web project stay out of the context.
+.git
+node_modules
+.cache
+.data
+training
+Paper
+docs
+web
+test_images
+*.log
